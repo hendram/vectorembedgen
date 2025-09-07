@@ -28,20 +28,29 @@ SessionLocal = sessionmaker(bind=engine)
 app = FastAPI()
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
-# --- Create table (if not exists) ---
-with SessionLocal() as session:
-    session.execute(sql_text("""
-        CREATE TABLE IF NOT EXISTS textvectorized (
-            id BIGINT AUTO_INCREMENT PRIMARY KEY,
-            chunk_text TEXT NOT NULL,
-            embedding VECTOR(384)
-        )
-    """))
-    session.commit()
-
 BATCH_SIZE = 5
 
 from urllib.parse import urlparse
+
+def normalize_table_name_external(raw_searched: str) -> str:
+    """
+    Convert a raw searched string into a safe table name for external tables.
+    Strips common filters and invalid characters, replaces spaces with underscores,
+    and appends '_external' suffix.
+    """
+    if not raw_searched:
+        return "external_table"
+
+    # Step 1: Remove filters starting with -- or - (like --filetype=xhtml or -site=)
+    base = re.split(r"\s--|\s-", raw_searched)[0].strip()
+
+    # Step 2: Replace all non-alphanumeric characters with underscores
+    base = re.sub(r"[^0-9a-zA-Z]+", "_", base)
+
+    # Step 3: Lowercase and append _external
+    table_name = f"{base.lower()}_external"
+
+    return table_name
 
 def normalize_table_name(url: str, suffix: str) -> str:
     """
@@ -65,97 +74,111 @@ def normalize_search_keyword(keyword: str, suffix: str) -> str:
     base = re.sub(r"[^a-zA-Z0-9]", "_", keyword.lower())
     return f"{base}_{suffix}"
 
+from fastapi import Body
+from fastapi.responses import JSONResponse
+from datetime import datetime, timedelta
+from sqlalchemy import text as sql_text
+
 @app.post("/embed")
 async def embed(chunks: list[dict] = Body(...)):
     if not chunks:
         return JSONResponse({"status": "error", "message": "No chunks provided"})
 
-    # Extract texts and metadata
+    # 1️⃣ Extract searched from first chunk's metadata
+    first_meta = chunks[0].get("metadata", {})
+    searched_raw = first_meta.get("searched", "").strip()
+    if not searched_raw:
+        return JSONResponse({"status": "error", "message": "No searched keyword in metadata"})
+
+    # 2️⃣ Get base keyword (strip filters like --filetype, -site)
+    base_keyword = searched_raw.split("--")[0].split("-")[0].strip()
+    if not base_keyword:
+        return JSONResponse({"status": "error", "message": "No valid base keyword found"})
+    
+    # 3️⃣ Normalize table name
+    external_table = normalize_table_name_external(base_keyword)
+
+    # 4️⃣ Extract texts and metadata
     texts = [c["text"] for c in chunks if "text" in c]
     metadata_list = [c.get("metadata", {}) for c in chunks]
 
-    # Extract searched keyword from metadata
-    searched_keyword = metadata_list[0]["searched"]  # assume must exist, no fallback
-    external_table = normalize_table_name(searched_keyword, "external")
-
+    # 5️⃣ Encode embeddings
     vecs = model.encode(texts, show_progress_bar=False)
     inserted_count = 0
 
     try:
         with SessionLocal() as session:
-            # 1️⃣ Create external table if not exists
-            session.execute(sql_text(f"""
-                CREATE TABLE IF NOT EXISTS {external_table} (
-                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                    chunk_text TEXT NOT NULL,
-                    embedding VECTOR(384),
-                    url TEXT,
-                    retrieved_at TIMESTAMP,
-                    sourcekb VARCHAR(100),
-                    searched VARCHAR(255)
-                )
-            """))
+            # --- Check if table exists ---
+            table_exists = session.execute(sql_text(f"""
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = DATABASE()
+                  AND table_name = :table_name
+            """), {"table_name": external_table}).fetchone()
+
+            recreate = False
+            if table_exists:
+                # Check table creation time
+                create_time = session.execute(sql_text(f"""
+                    SELECT CREATE_TIME
+                    FROM information_schema.tables
+                    WHERE table_schema = DATABASE()
+                      AND table_name = :table_name
+                """), {"table_name": external_table}).fetchone()[0]
+
+                if create_time < datetime.utcnow() - timedelta(days=3):
+                    # Too old → drop & recreate
+                    session.execute(sql_text(f"DROP TABLE IF EXISTS {external_table}"))
+                    recreate = True
+            else:
+                # Table does not exist → create
+                recreate = True
+
+            # --- Create table if needed ---
+            if recreate:
+                session.execute(sql_text(f"""
+                    CREATE TABLE {external_table} (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        chunk_text TEXT NOT NULL,
+                        embedding VECTOR(384),
+                        url TEXT,
+                        retrieved_at TIMESTAMP,
+                        sourcekb VARCHAR(100)
+                    )
+                """))
             session.commit()
 
-            # 2️⃣ Insert chunks into external table
+            # --- Insert chunks ---
             for text_val, emb, meta in zip(texts, vecs, metadata_list):
                 session.execute(sql_text(f"""
                     INSERT INTO {external_table} 
-                    (chunk_text, embedding, url, retrieved_at, sourcekb, searched)
-                    VALUES (:chunk_text, CAST(:emb_str AS VECTOR(384)), :url, :retrieved_at, :sourcekb, :searched)
+                    (chunk_text, embedding, url, retrieved_at, sourcekb)
+                    VALUES (:chunk_text, CAST(:emb_str AS VECTOR(384)), :url, :retrieved_at, :sourcekb)
                     ON DUPLICATE KEY UPDATE
                         chunk_text = VALUES(chunk_text),
                         embedding = VALUES(embedding),
                         url = VALUES(url),
                         retrieved_at = VALUES(retrieved_at),
-                        sourcekb = VALUES(sourcekb),
-                        searched = VALUES(searched)
-                """),
-                {
+                        sourcekb = VALUES(sourcekb)
+                """), {
                     "chunk_text": text_val,
                     "emb_str": json.dumps(emb.astype("float32").tolist()),
-                    "url": meta["url"],
-                    "retrieved_at": meta["retrieved_at"],
-                    "sourcekb": meta["sourcekb"],
-                    "searched": searched_keyword
+                    "url": meta.get("url"),
+                    "retrieved_at": meta.get("date"),
+                    "sourcekb": meta.get("sourcekb"),
                 })
                 inserted_count += 1
 
             session.commit()
 
-            # 3️⃣ Check for corresponding internal table
-            internal_table = normalize_search_keyword(searched_keyword, "internal")
-            join_table = f"{internal_table}_{external_table}"
-
-            internal_exists = session.execute(sql_text(f"""
-                SELECT COUNT(*) 
-                FROM information_schema.tables 
-                WHERE table_name = '{internal_table}'
-            """)).scalar()
-
-            join_exists = session.execute(sql_text(f"""
-                SELECT COUNT(*) 
-                FROM information_schema.tables 
-                WHERE table_name = '{join_table}'
-            """)).scalar()
-
-            # 4️⃣ If internal exists and join does not, create join table
-            if internal_exists > 0 and join_exists == 0:
-                session.execute(sql_text(f"""
-                    CREATE TABLE {join_table} (
-                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                        internal_id BIGINT,
-                        external_id BIGINT,
-                        chunk_text TEXT,
-                        internal_embedding VECTOR(384),
-                        external_embedding VECTOR(384),
-                        url TEXT,
-                        retrieved_at TIMESTAMP,
-                        sourcekb VARCHAR(100),
-                        searched VARCHAR(255)
-                    )
-                """))
-                session.commit()
+            # --- Update keywords table ---
+            session.execute(sql_text("""
+                    UPDATE keywords
+                    SET status = 'completed',
+                    last_seen = CURRENT_TIMESTAMP
+                    WHERE keyword = :kw
+                 """), {"kw": searched_raw})
+            session.commit()
 
     except Exception as e:
         return JSONResponse({"status": "error", "message": str(e)})
@@ -164,7 +187,7 @@ async def embed(chunks: list[dict] = Body(...)):
         "status": "ok",
         "inserted_count": inserted_count,
         "external_table": external_table,
-        "join_table_created": internal_exists > 0 and join_exists == 0
+        "keyword_status": "completed"
     })
 
 @app.post("/insertsearchtodb")
@@ -173,47 +196,52 @@ async def insert_search_to_db(topic: dict = Body(...)):
     if not searched_full:
         return JSONResponse({"answer": "no", "reason": "No searched text provided"})
 
-    # Extract first word as keyword
-    keyword = searched_full.split()[0].lower()
-
     try:
         with SessionLocal() as session:
-            # 1️⃣ Create keywords table if not exists
+            # Ensure keywords table exists
             session.execute(sql_text("""
                 CREATE TABLE IF NOT EXISTS keywords (
-                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                    searched VARCHAR(255) UNIQUE
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY,   -- TiDB requires a proper PK
+                    keyword VARCHAR(255) UNIQUE, 
+                    status ENUM('pending','completed') DEFAULT 'pending',
+                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    searches INT DEFAULT 1
                 )
             """))
             session.commit()
 
-            # 2️⃣ Check if keyword exists
+            # Check if keyword exists
             existing = session.execute(
-                sql_text("SELECT id FROM keywords WHERE searched = :kw"),
-                {"kw": keyword}
+                sql_text("SELECT keyword, status, searches FROM keywords WHERE keyword = :kw"),
+                {"kw": searched_full}
             ).first()
 
             if not existing:
-                # Insert new keyword
+                # Insert new keyword with pending status
                 session.execute(
-                    sql_text("INSERT INTO keywords (searched) VALUES (:kw)"),
-                    {"kw": keyword}
+                    sql_text("""
+                        INSERT INTO keywords (keyword, status, last_seen, searches)
+                        VALUES (:kw, 'pending', NOW(), 1)
+                    """),
+                    {"kw": searched_full}
                 )
                 session.commit()
-                return JSONResponse({"answer": "no", "reason": "Keyword just inserted"})
+                return JSONResponse({"answer": "no", "reason": "Keyword just inserted, status pending"})
 
-            # 3️⃣ Keyword exists, check if join table exists
-            join_table = normalize_search_keyword(keyword, "internal_external")
-            join_exists = session.execute(sql_text(f"""
-                SELECT COUNT(*) 
-                FROM information_schema.tables 
-                WHERE table_name = :tbl
-            """), {"tbl": join_table}).scalar()
+            # Update metadata (counter + last_seen)
+            session.execute(
+                sql_text("""
+                    UPDATE keywords
+                    SET searches = searches + 1, last_seen = NOW()
+                    WHERE keyword = :kw
+                """),
+                {"kw": searched_full}
+            )
+            session.commit()
 
-            if join_exists > 0:
-                return JSONResponse({"answer": "yes", "join_table": join_table})
-            else:
-                return JSONResponse({"answer": "no", "reason": "Join table does not exist"})
+            # Return based on status
+            return JSONResponse({"answer": "yes" if existing.status == "completed" else "no",
+                                 "status": existing.status})
 
     except Exception as e:
         return JSONResponse({"answer": "no", "error": str(e)})
@@ -247,7 +275,7 @@ async def embedcorporate(chunks: list[dict] = Body(...)):
 
     try:
         with SessionLocal() as session:
-            # 1️⃣ Create internal table if not exists
+            # 1. Create internal table if not exists
             session.execute(sql_text(f"""
                 CREATE TABLE IF NOT EXISTS {internal_table} (
                     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -260,7 +288,7 @@ async def embedcorporate(chunks: list[dict] = Body(...)):
             """))
             session.commit()
 
-            # 2️⃣ Insert chunks with metadata
+            # 2. Insert chunks with metadata
             for text_val, emb, meta in zip(texts, vecs, metadata_list):
                 session.execute(sql_text(f"""
                     INSERT INTO {internal_table} 
@@ -272,8 +300,7 @@ async def embedcorporate(chunks: list[dict] = Body(...)):
                         url = VALUES(url),
                         retrieved_at = VALUES(retrieved_at),
                         sourcekb = VALUES(sourcekb)
-                """),
-                {
+                """), {
                     "chunk_text": text_val,
                     "emb_str": json.dumps(emb.astype("float32").tolist()),
                     "url": meta["url"],
@@ -284,56 +311,13 @@ async def embedcorporate(chunks: list[dict] = Body(...)):
 
             session.commit()
 
-            # 3️⃣ Handle external table join
-            external_table = normalize_table_name(url, "external")  # e.g., mongodb_external
-
-            # Check if external table exists
-            ext_exists = session.execute(sql_text(f"""
-                SELECT COUNT(*)
-                FROM information_schema.tables
-                WHERE table_name = '{external_table}'
-            """)).scalar()
-
-            if ext_exists > 0:
-                join_table = f"{internal_table}_{external_table}"  # e.g., mongodb_internal_mongodb_external
-
-                # Drop & recreate join table
-                session.execute(sql_text(f"DROP TABLE IF EXISTS {join_table}"))
-                session.commit()
-
-                session.execute(sql_text(f"""
-                    CREATE TABLE {join_table} (
-                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                        internal_id BIGINT,
-                        external_id BIGINT,
-                        chunk_text TEXT,
-                        internal_embedding VECTOR(384),
-                        external_embedding VECTOR(384),
-                        url TEXT,
-                        retrieved_at TIMESTAMP,
-                        sourcekb VARCHAR(100)
-                    )
-                """))
-                session.commit()
-
-                # Populate join table using vector similarity (pseudo SQL, implement actual vector distance logic if TiDB supports)
-                session.execute(sql_text(f"""
-                    INSERT INTO {join_table} (internal_id, external_id, chunk_text, internal_embedding, external_embedding, url, retrieved_at, sourcekb)
-                    SELECT i.id, e.id, i.chunk_text, i.embedding, e.embedding, i.url, i.retrieved_at, i.sourcekb
-                    FROM {internal_table} i
-                    JOIN {external_table} e
-                      ON 1=1  -- placeholder, replace with actual vector similarity comparison if supported
-                """))
-                session.commit()
-
     except Exception as e:
         return JSONResponse({"status": "error", "message": str(e)})
 
     return JSONResponse({
         "status": "ok",
         "inserted_count": inserted_count,
-        "internal_table": internal_table,
-        "external_table": external_table if ext_exists > 0 else None
+        "internal_table": internal_table
     })
 
 
