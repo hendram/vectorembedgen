@@ -9,10 +9,8 @@ import json
 import pymysql
 import math
 import re
-import logging
 import numpy as np
 
-logger = logging.getLogger("uvicorn.error")
 
 # --- Load environment variables ---
 load_dotenv()
@@ -57,21 +55,13 @@ def normalize_table_name_external(raw_searched: str) -> str:
 
     return table_name
 
-def normalize_table_name(url: str, suffix: str) -> str:
+def normalize_table_name(topic: str, suffix: str) -> str:
     """
-    Convert a URL like https://sub.example.co.uk to 'example_internal'.
-    Always uses the second-level domain.
+    Convert a topic like 'mongodb rag' to 'mongodb_rag_internal'.
+    Replaces spaces and non-alphanumeric chars with underscores.
     """
-    parsed = urlparse(url)
-    hostname = parsed.hostname or "unknown"  # e.g., 'sub.example.co.uk'
-    parts = hostname.split(".")
-    
-    if len(parts) >= 2:
-        base = parts[-2]  # 'example' from 'sub.example.co.uk'
-    else:
-        base = parts[0]
-
-    return f"{base}_{suffix}".lower()
+    sanitized = re.sub(r'[^0-9a-zA-Z]+', '_', topic.strip())  # replace spaces/punctuation with _
+    return f"{sanitized}_{suffix}".lower()
 
 def normalize_search_keyword(keyword: str, suffix: str) -> str:
     """Convert keyword to safe table name with suffix"""
@@ -133,7 +123,7 @@ async def embed(chunks: list[dict] = Body(...)):
 
                 if create_time < datetime.utcnow() - timedelta(days=3):
                     # Too old → drop & recreate
-                    session.execute(sql_text(f"DROP TABLE IF EXISTS {external_table}"))
+                    session.execute(sql_text(f"DROP TABLE IF EXISTS `{external_table}`"))
                     recreate = True
             else:
                 # Table does not exist → create
@@ -142,7 +132,7 @@ async def embed(chunks: list[dict] = Body(...)):
             # --- Create table if needed ---
             if recreate:
                 session.execute(sql_text(f"""
-                    CREATE TABLE {external_table} (
+                    CREATE TABLE `{external_table}` (
                         id BIGINT AUTO_INCREMENT PRIMARY KEY,
                         chunk_text TEXT NOT NULL,
                         embedding VECTOR(384),
@@ -156,7 +146,7 @@ async def embed(chunks: list[dict] = Body(...)):
             # --- Insert chunks ---
             for text_val, emb, meta in zip(texts, vecs, metadata_list):
                 session.execute(sql_text(f"""
-                    INSERT INTO {external_table} 
+                    INSERT INTO `{external_table}` 
                     (chunk_text, embedding, url, retrieved_at, sourcekb)
                     VALUES (:chunk_text, CAST(:emb_str AS VECTOR(384)), :url, :retrieved_at, :sourcekb)
                     ON DUPLICATE KEY UPDATE
@@ -204,7 +194,7 @@ async def insert_search_to_db(topic: dict = Body(...)):
     try:
         with SessionLocal() as session:
             # Ensure keywords table exists
-            session.execute(sql_text("""
+            session.execute(sql_text(f"""
                 CREATE TABLE IF NOT EXISTS keywords (
                     id BIGINT AUTO_INCREMENT PRIMARY KEY,   -- TiDB requires a proper PK
                     keyword VARCHAR(255) UNIQUE, 
@@ -276,13 +266,18 @@ async def embedcorporate(chunks: list[dict] = Body(...)):
     first_meta = metadata_list[0]
     url = first_meta["url"]
     sourcekb = first_meta["sourcekb"]
-    internal_table = normalize_table_name(url, sourcekb)  # e.g., mongodb_internal
-
+    topic = first_meta["topic"]    
+    internal_table = normalize_table_name(topic, sourcekb)  # e.g., mongodb_internal
+ 
     try:
         with SessionLocal() as session:
-            # 1. Create internal table if not exists
+            
+            session.execute(sql_text(f"DROP TABLE IF EXISTS `{internal_table}`"))
+            session.commit()
+
+         # 1. Create internal table if not exists
             session.execute(sql_text(f"""
-                CREATE TABLE IF NOT EXISTS {internal_table} (
+                CREATE TABLE IF NOT EXISTS `{internal_table}` (
                     id BIGINT AUTO_INCREMENT PRIMARY KEY,
                     chunk_text TEXT NOT NULL,
                     embedding VECTOR(384),
@@ -296,7 +291,7 @@ async def embedcorporate(chunks: list[dict] = Body(...)):
             # 2. Insert chunks with metadata
             for text_val, emb, meta in zip(texts, vecs, metadata_list):
                 session.execute(sql_text(f"""
-                    INSERT INTO {internal_table} 
+                    INSERT INTO `{internal_table}` 
                     (chunk_text, embedding, url, retrieved_at, sourcekb)
                     VALUES (:chunk_text, CAST(:emb_str AS VECTOR(384)), :url, :retrieved_at, :sourcekb)
                     ON DUPLICATE KEY UPDATE
@@ -325,23 +320,27 @@ async def embedcorporate(chunks: list[dict] = Body(...)):
         "internal_table": internal_table
     })
 
-def normalize_keyword(searched: str):
-    return searched.split("--")[0].split("-")[0].strip()
+def normalize_keyword(searched: str) -> str:
+    """
+    Normalize a keyword for table names:
+    1. Strip leading/trailing spaces.
+    2. Remove everything after the first occurrence of ' -- ' or ' - '.
+    3. Replace remaining spaces with underscores.
+    """
+    s = searched.strip()
 
-def get_neighbor_chunks(conn, table, chunk_id):
-    """
-    Retrieve chunk-1, chunk, chunk+1 and concatenate.
-    """
-    rows = conn.execute(sql_text(f"""
-        SELECT chunk_id, chunk_text FROM {table}
-        WHERE chunk_id IN (:prev_id, :curr_id, :next_id)
-        ORDER BY chunk_id
-    """), {
-        "prev_id": chunk_id - 1,
-        "curr_id": chunk_id,
-        "next_id": chunk_id + 1
-    }).fetchall()
-    return " ".join([r["chunk_text"] for r in rows])
+    # Find the first occurrence of ' -- ' or ' - '
+    # This pattern is more flexible and matches cases with or without surrounding spaces
+    split_pattern = re.compile(r'\s--\s|\s-|\s--')
+    
+    # Split the string at the first match
+    parts = split_pattern.split(s, maxsplit=1)
+    base = parts[0].strip()
+
+    # Replace remaining spaces with underscores
+    base = base.replace(" ", "_")
+
+    return base
 
 @app.post("/searchvectordb")
 async def searchvectordb(payload: dict = Body(...)):
@@ -351,7 +350,7 @@ async def searchvectordb(payload: dict = Body(...)):
         question = question_obj.get("question", "").strip()
         options = question_obj.get("options", [])
         metadata = question_obj.get("metadata", {})
-
+        
         if not question or not options:
             return JSONResponse({"status": "error", "message": "Missing question or options"})
 
@@ -373,9 +372,9 @@ async def searchvectordb(payload: dict = Body(...)):
 
             # --- External search ---
             with SessionLocal() as session:
-                rows = session.execute(sql_text("""
+                rows = session.execute(sql_text(f"""
                     SELECT id, chunk_text, embedding, url, retrieved_at
-                    FROM mongodb_rag_external
+                    FROM `{base_keyword}_external`
                     WHERE sourcekb='external' AND retrieved_at >= :cutoff
                 """), {"cutoff": external_cutoff}).mappings().all()
 
@@ -391,9 +390,9 @@ async def searchvectordb(payload: dict = Body(...)):
 
             # --- Internal search ---
             with SessionLocal() as session:
-                rows = session.execute(sql_text("""
+                rows = session.execute(sql_text(f"""
                     SELECT id, chunk_text, embedding, url, retrieved_at
-                    FROM mongodb_rag_internal
+                    FROM `{base_keyword}_internal`
                     WHERE sourcekb='internal' AND retrieved_at >= :cutoff
                 """), {"cutoff": internal_cutoff}).mappings().all()
 
@@ -417,8 +416,6 @@ async def searchvectordb(payload: dict = Body(...)):
 
         # --- Select best option ---
         best_option = max(option_scores, key=lambda x: x["score"])
-        logger.info(f"Option scores: {option_scores}")
-        logger.info(f"Best option selected: {best_option}")
 
         return JSONResponse({
             "status": "ok",
@@ -429,5 +426,4 @@ async def searchvectordb(payload: dict = Body(...)):
         })
 
     except Exception as e:
-        logger.exception("Error in /searchvectordb")
         return JSONResponse({"status": "error", "message": str(e)})
