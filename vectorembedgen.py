@@ -2,13 +2,17 @@ from fastapi import FastAPI, Body
 from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine, text as sql_text
 from sqlalchemy.orm import sessionmaker
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 from dotenv import load_dotenv
 import os
 import json
 import pymysql
 import math
 import re
+import logging
+import numpy as np
+
+logger = logging.getLogger("uvicorn.error")
 
 # --- Load environment variables ---
 load_dotenv()
@@ -27,6 +31,7 @@ SessionLocal = sessionmaker(bind=engine)
 # --- FastAPI app ---
 app = FastAPI()
 model = SentenceTransformer("all-MiniLM-L6-v2")
+cross_encoder = CrossEncoder("cross-encoder/nli-deberta-v3-large")
 
 BATCH_SIZE = 5
 
@@ -82,7 +87,7 @@ from sqlalchemy import text as sql_text
 @app.post("/embed")
 async def embed(chunks: list[dict] = Body(...)):
     if not chunks:
-        return JSONResponse({"status": "error", "message": "No chunks provided"})
+         return JSONResponse({"status": "error", "message": "No chunks provided"})
 
     # 1️⃣ Extract searched from first chunk's metadata
     first_meta = chunks[0].get("metadata", {})
@@ -320,29 +325,109 @@ async def embedcorporate(chunks: list[dict] = Body(...)):
         "internal_table": internal_table
     })
 
+def normalize_keyword(searched: str):
+    return searched.split("--")[0].split("-")[0].strip()
+
+def get_neighbor_chunks(conn, table, chunk_id):
+    """
+    Retrieve chunk-1, chunk, chunk+1 and concatenate.
+    """
+    rows = conn.execute(sql_text(f"""
+        SELECT chunk_id, chunk_text FROM {table}
+        WHERE chunk_id IN (:prev_id, :curr_id, :next_id)
+        ORDER BY chunk_id
+    """), {
+        "prev_id": chunk_id - 1,
+        "curr_id": chunk_id,
+        "next_id": chunk_id + 1
+    }).fetchall()
+    return " ".join([r["chunk_text"] for r in rows])
 
 @app.post("/searchvectordb")
-async def searchvectordb(query: str = Body(...), top_k: int = Body(1)):
-    # Encode query → list of floats
-    query_embedding = model.encode([query], show_progress_bar=False)[0].tolist()
-    emb_str = json.dumps(query_embedding)
-
-    session = SessionLocal()
+async def searchvectordb(payload: dict = Body(...)):
     try:
-        rows = session.execute(
-            sql_text("""
-                SELECT id, chunk_text,
-                       VEC_COSINE_DISTANCE(embedding, CAST(:query AS VECTOR(384))) AS score
-                FROM textvectorized
-                ORDER BY score ASC
-                LIMIT :top_k
-            """),
-            {"query": emb_str, "top_k": top_k}
-        ).mappings().all()
-    finally:
-        session.close()
+        query_json = json.loads(payload.get("query", "{}"))
+        question_obj = query_json["question"]
+        question = question_obj.get("question", "").strip()
+        options = question_obj.get("options", [])
+        metadata = question_obj.get("metadata", {})
 
-    return {
-        "query": query,
-        "top_results": [dict(row) for row in rows]
-    }
+        if not question or not options:
+            return JSONResponse({"status": "error", "message": "Missing question or options"})
+
+        # Extract base keyword from metadata.searched
+        searched_raw = metadata.get("searched", "")
+        base_keyword = normalize_keyword(searched_raw)
+
+        now = datetime.utcnow()
+        internal_cutoff = now - timedelta(days=365)
+        external_cutoff = now - timedelta(days=90)
+
+        option_scores = []
+
+        for option in options:
+            query_text = f"{question} {option}"
+            vec = model.encode([query_text])[0]
+
+            results = {"internal": [], "external": []}
+
+            # --- External search ---
+            with SessionLocal() as session:
+                rows = session.execute(sql_text("""
+                    SELECT id, chunk_text, embedding, url, retrieved_at
+                    FROM mongodb_rag_external
+                    WHERE sourcekb='external' AND retrieved_at >= :cutoff
+                """), {"cutoff": external_cutoff}).mappings().all()
+
+                for row in rows:
+                    emb = np.array(json.loads(row["embedding"]))
+                    score = np.dot(vec, emb) / (np.linalg.norm(vec) * np.linalg.norm(emb))
+                    results["external"].append({
+                        "id": row["id"],
+                        "text": row["chunk_text"],
+                        "url": row["url"],
+                        "score": float(score)
+                    })
+
+            # --- Internal search ---
+            with SessionLocal() as session:
+                rows = session.execute(sql_text("""
+                    SELECT id, chunk_text, embedding, url, retrieved_at
+                    FROM mongodb_rag_internal
+                    WHERE sourcekb='internal' AND retrieved_at >= :cutoff
+                """), {"cutoff": internal_cutoff}).mappings().all()
+
+                for row in rows:
+                    emb = np.array(json.loads(row["embedding"]))
+                    score = np.dot(vec, emb) / (np.linalg.norm(vec) * np.linalg.norm(emb))
+                    results["internal"].append({
+                        "id": row["id"],
+                        "text": row["chunk_text"],
+                        "url": row["url"],
+                        "score": float(score)
+                    })
+
+            # --- Select best scoring chunk among internal + external ---
+            all_results = results["internal"] + results["external"]
+            if all_results:
+                best_chunk = max(all_results, key=lambda x: x["score"])
+                option_scores.append({"option": option, "score": best_chunk["score"]})
+            else:
+                option_scores.append({"option": option, "score": 0})
+
+        # --- Select best option ---
+        best_option = max(option_scores, key=lambda x: x["score"])
+        logger.info(f"Option scores: {option_scores}")
+        logger.info(f"Best option selected: {best_option}")
+
+        return JSONResponse({
+            "status": "ok",
+            "question": question,
+            "options": options,
+            "bestAnswer": best_option["option"],
+            "metadata": metadata
+        })
+
+    except Exception as e:
+        logger.exception("Error in /searchvectordb")
+        return JSONResponse({"status": "error", "message": str(e)})
