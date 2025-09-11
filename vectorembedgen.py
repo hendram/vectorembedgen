@@ -371,10 +371,19 @@ async def searchvectordb(payload: dict = Body(...)):
             results = {"internal": [], "external": []}
 
             # --- External search ---
-            with SessionLocal() as session:
+        table_name_external = f"{base_keyword}_external"
+
+        with SessionLocal() as session:
+                 exists = session.execute(sql_text("""
+                   SELECT COUNT(*) as cnt
+                   FROM information_schema.tables
+                   WHERE table_schema = DATABASE() AND table_name = :tname
+                 """), {"tname": table_name_external}).scalar()
+
+        if exists:
                 rows = session.execute(sql_text(f"""
                     SELECT id, chunk_text, embedding, url, retrieved_at
-                    FROM `{base_keyword}_external`
+                    FROM `{table_name_external}`
                     WHERE sourcekb='external' AND retrieved_at >= :cutoff
                 """), {"cutoff": external_cutoff}).mappings().all()
 
@@ -389,10 +398,19 @@ async def searchvectordb(payload: dict = Body(...)):
                     })
 
             # --- Internal search ---
-            with SessionLocal() as session:
+        table_name_internal = f"{base_keyword}_internal"
+
+        with SessionLocal() as session:
+                 exists = session.execute(sql_text("""
+                   SELECT COUNT(*) as cnt
+                   FROM information_schema.tables
+                   WHERE table_schema = DATABASE() AND table_name = :tname
+                  """), {"tname": table_name_internal}).scalar()
+
+        if exists:
                 rows = session.execute(sql_text(f"""
                     SELECT id, chunk_text, embedding, url, retrieved_at
-                    FROM `{base_keyword}_internal`
+                    FROM `{table_name_internal}`
                     WHERE sourcekb='internal' AND retrieved_at >= :cutoff
                 """), {"cutoff": internal_cutoff}).mappings().all()
 
@@ -407,11 +425,11 @@ async def searchvectordb(payload: dict = Body(...)):
                     })
 
             # --- Select best scoring chunk among internal + external ---
-            all_results = results["internal"] + results["external"]
-            if all_results:
+        all_results = results["internal"] + results["external"]
+        if all_results:
                 best_chunk = max(all_results, key=lambda x: x["score"])
                 option_scores.append({"option": option, "score": best_chunk["score"]})
-            else:
+        else:
                 option_scores.append({"option": option, "score": 0})
 
         # --- Select best option ---
