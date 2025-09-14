@@ -42,11 +42,13 @@ source .venv/bin/activate
 uvicorn vectorembedgen:app --host 0.0.0.0 --port 8000
 ```
 
-How This Works ?
+---
 
-This works based on some logic received from chunkgeneratorforaimodel
+###   How This Works ?
 
-📌 /embed Endpoint – Embedding and Storage Pipeline
+**This works based on some logic received from chunkgeneratorforaimodel**
+
+#  📌  /embed Endpoint – Embedding and Storage Pipeline
 
 The /embed API endpoint is responsible for:
 
@@ -467,6 +469,9 @@ From all options, select the one with the highest score:
 
 best_option = max(option_scores, key=lambda x: x["score"])
 
+
+---
+
 🔹 Response
 
 Example response:
@@ -487,7 +492,7 @@ If something goes wrong (e.g., DB error), returns:
 
 ---
 
-#🔹 Workflow Role
+#�   ��� Workflow Role
 
 /insertsearchtodb → Track keyword status.
 
@@ -495,7 +500,7 @@ If something goes wrong (e.g., DB error), returns:
 
 /searchvectordb → Query embeddings to pick best multiple-choice answer. or
 
-/searchvectordb   ^f^r  only if insertsearchtodb keyword check having status completed 
+/searchvectordb  ^f^r only if insertsearchtodb keyword check having status completed 
 
 This endpoint closes the loop: after ingestion, it lets you ask questions with options and retrieves the best answer based on stored knowledge.
 
