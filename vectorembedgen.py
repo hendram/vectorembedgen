@@ -10,7 +10,28 @@ import pymysql
 import math
 import re
 import numpy as np
+import logging
+import time
 
+# --- JSON logger setup ---
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log_record = {
+            "level": record.levelname,
+            "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S.%fZ"),
+            "logger": record.name,
+            "message": record.getMessage()
+        }
+        # Include extra fields if present
+        if hasattr(record, "extra"):
+            log_record.update(record.extra)
+        return json.dumps(log_record, ensure_ascii=False)
+
+logger = logging.getLogger("tidb_vector_setup")
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+handler.setFormatter(JsonFormatter())
+logger.addHandler(handler)
 
 # --- Load environment variables ---
 load_dotenv()
@@ -143,8 +164,39 @@ async def embed(chunks: list[dict] = Body(...)):
                 """))
             session.commit()
 
+           # --- Enable TiFlash replica for external table ---
+            session.execute(sql_text(f"""
+                ALTER TABLE `{external_table}` SET TIFLASH REPLICA 1;
+            """))
+            session.commit()
+            logger.info("TiFlash replica enabled for external table", extra={"table": external_table})
+
+             # --- Wait until TiFlash is ready ---
+        while True:
+            result = session.execute(sql_text(f"""
+                SELECT AVAILABLE 
+                FROM information_schema.tiflash_replica 
+                WHERE TABLE_SCHEMA = DATABASE() 
+                AND TABLE_NAME = '{external_table}';
+            """)).fetchone()
+
+            if result and result[0] == 1:
+                logger.info("TiFlash replica is ready ✅", extra={"table": external_table})
+                break
+            else:
+                logger.warning("TiFlash not ready yet, waiting 5s...", extra={"table": external_table})
+                time.sleep(5)
+
+           # --- Create vector index on embedding column ---
+        session.execute(sql_text(f"""
+                ALTER TABLE `{external_table}`
+                ADD VECTOR INDEX embedding_idx ((VEC_COSINE_DISTANCE(embedding))) USING HNSW;
+        """))
+        session.commit()
+        logger.info("Vector index created successfully ✅", extra={"table": external_table})
+
             # --- Insert chunks ---
-            for text_val, emb, meta in zip(texts, vecs, metadata_list):
+        for text_val, emb, meta in zip(texts, vecs, metadata_list):
                 session.execute(sql_text(f"""
                     INSERT INTO `{external_table}` 
                     (chunk_text, embedding, url, retrieved_at, sourcekb)
@@ -164,16 +216,16 @@ async def embed(chunks: list[dict] = Body(...)):
                 })
                 inserted_count += 1
 
-            session.commit()
+                session.commit()
 
             # --- Update keywords table ---
-            session.execute(sql_text("""
+                session.execute(sql_text("""
                     UPDATE keywords
                     SET status = 'completed',
                     last_seen = CURRENT_TIMESTAMP
                     WHERE keyword = :kw
-                 """), {"kw": searched_raw})
-            session.commit()
+                """), {"kw": searched_raw})
+                session.commit()
 
     except Exception as e:
         return JSONResponse({"status": "error", "message": str(e)})
@@ -288,8 +340,39 @@ async def embedcorporate(chunks: list[dict] = Body(...)):
             """))
             session.commit()
 
-            # 2. Insert chunks with metadata
-            for text_val, emb, meta in zip(texts, vecs, metadata_list):
+          # 2. Enable TiFlash replica
+            session.execute(sql_text(f"""
+             ALTER TABLE `{internal_table}` SET TIFLASH REPLICA 1;
+            """))
+            session.commit()
+            logger.info("TiFlash replica enabled", extra={"table": internal_table})
+
+          # 3. Wait until TiFlash is ready
+        while True:
+            result = session.execute(sql_text(f"""
+                SELECT AVAILABLE 
+                FROM information_schema.tiflash_replica 
+                WHERE TABLE_SCHEMA = DATABASE() 
+                  AND TABLE_NAME = '{internal_table}';
+            """)).fetchone()
+            
+            if result and result[0] == 1:
+                logger.info("TiFlash replica is ready ✅", extra={"table": internal_table})
+                break
+            else:
+                logger.warning("TiFlash not ready yet, waiting 5s...", extra={"table": internal_table})
+                time.sleep(5)
+
+        # 4. Create vector index
+                session.execute(sql_text(f"""
+                   ALTER TABLE `{internal_table}`
+                   ADD VECTOR INDEX embedding_idx ((VEC_COSINE_DISTANCE(embedding))) USING HNSW;
+                """))
+                session.commit()
+                logger.info("Vector index created successfully ✅", extra={"table": internal_table})
+
+           # 5. Insert chunks with metadata
+        for text_val, emb, meta in zip(texts, vecs, metadata_list):
                 session.execute(sql_text(f"""
                     INSERT INTO `{internal_table}` 
                     (chunk_text, embedding, url, retrieved_at, sourcekb)
@@ -309,7 +392,7 @@ async def embedcorporate(chunks: list[dict] = Body(...)):
                 })
                 inserted_count += 1
 
-            session.commit()
+                session.commit()
 
     except Exception as e:
         return JSONResponse({"status": "error", "message": str(e)})
