@@ -44,136 +44,120 @@ uvicorn vectorembedgen:app --host 0.0.0.0 --port 8000
 
 ---
 
-###   How This Works ?
+📖 How This Works
 
-**This works based on some logic received from chunkgeneratorforaimodel**
+This works based on some logic received from chunkgeneratorforaimodel
 
-#  📌  /embed Endpoint – Embedding and Storage Pipeline
+📌 /embed Endpoint – Embedding and Storage Pipeline
 
 The /embed API endpoint is responsible for:
 
-Extracting the searched keyword from incoming document chunks.
+📝 Extracting the searched keyword from incoming document chunks.
 
-Normalizing a table name to store embeddings for that keyword.
+🧹 Normalizing a table name to store embeddings for that keyword.
 
-Creating or refreshing the external table (if it does not exist or is too old).
+🗄️ Creating or refreshing the external table (if it does not exist or is too old).
 
-Enabling TiFlash replication for accelerated vector search queries.
+⚡ Enabling TiFlash replication for accelerated vector search queries.
 
-Creating a vector index on the embeddings column.
+🧭 Creating a vector index on the embeddings column.
 
-Inserting document chunks and their embeddings into the external table.
+📥 Inserting document chunks and their embeddings into the external table.
 
-Updating the keyword status in the keywords table.
+🔄 Updating the keyword status in the keywords table.
 
 🔹 Endpoint Definition
 @app.post("/embed")
 async def embed(chunks: list[dict] = Body(...)):
 
 
-Accepts a JSON body containing a list of chunks, where each chunk contains:
+Accepts a JSON body containing a list of chunks.
+
+Each chunk contains:
 
 "text" → the content to embed.
 
-"metadata" → additional details such as url, date, sourcekb, and the searched keyword.
+"metadata" → details such as url, date, sourcekb, and the searched keyword.
 
 🔹 Processing Steps
-1. Validate Input
+✅ Validate Input
 
-Ensures that the request contains chunks.
+Ensures the request contains chunks.
 
 Extracts the searched keyword from the first chunk’s metadata.
 
-If no keyword is provided → returns an error.
+If no keyword is provided → ❌ returns an error.
 
-2. Normalize Keyword
+🧹 Normalize Keyword
 
-Strips extra filters such as --filetype or -site.
+Strips filters like --filetype or -site.
 
 Produces a clean base keyword used to name the external table.
 
 external_table = normalize_table_name_external(base_keyword)
 
 
-This ensures that each unique search term has its own dedicated table for embeddings.
+➡️ Ensures each search term has its own dedicated table for embeddings.
 
-3. Encode Embeddings
+🧠 Encode Embeddings
 
-Uses the model.encode() function to convert text chunks into vector embeddings.
-
-Stores these vectors in memory for later database insertion.
+Converts chunks into embeddings with model.encode().
 
 vecs = model.encode(texts, show_progress_bar=False)
 
-4. Manage External Table
+🗄️ Manage External Table
 
-Connects to the database via SessionLocal.
+Connects via SessionLocal.
 
-Checks if the table already exists in information_schema.tables.
+If table exists but is older than 3 days → drop and recreate.
 
-If the table exists but is older than 3 days, it is dropped and recreated.
+Else → create fresh.
 
-If it does not exist, it is created fresh.
-
-The created table has the following structure:
-
-CREATE TABLE `{external_table}` (
+CREATE TABLE {external_table} (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     chunk_text TEXT NOT NULL,
     embedding VECTOR(384),
     url TEXT,
     retrieved_at TIMESTAMP,
     sourcekb VARCHAR(100)
-)
+);
 
-5. Enable TiFlash Replication
-
-TiFlash is enabled for the table to allow fast analytical/vector queries.
-
-ALTER TABLE `{external_table}` SET TIFLASH REPLICA 1;
+⚡ Enable TiFlash Replication
+ALTER TABLE {external_table} SET TIFLASH REPLICA 1;
 
 
-A loop waits until TiFlash reports that the replica is ready before proceeding.
+➡️ Waits until TiFlash is ready before proceeding.
 
-6. Create Vector Index
-
-A vector index is created on the embedding column to optimize similarity search:
-
-ALTER TABLE `{external_table}`
-ADD VECTOR INDEX embedding_idx ((VEC_COSINE_DISTANCE(embedding))) USING HNSW;
+🧭 Create Vector Index
+ALTER TABLE {external_table}
+ADD VECTOR INDEX embedding_idx ((VEC_COSINE_DISTANCE(embedding)))
+USING HNSW;
 
 
-This allows fast nearest-neighbor lookups (e.g., finding the most relevant chunks for a query).
+➡️ Optimizes nearest-neighbor lookups for similarity search.
 
-7. Insert Chunks with Embeddings
+📥 Insert Chunks with Embeddings
 
-Each chunk is inserted into the external table with:
+Inserts:
 
-chunk_text → raw text.
+chunk_text → raw text
 
-embedding → 384-dimensional vector (stored as JSON → CAST into VECTOR).
+embedding → 384-dim vector
 
-url → source URL.
+url → source URL
 
-retrieved_at → timestamp from metadata.
+retrieved_at → timestamp
 
-sourcekb → source knowledge base identifier.
+sourcekb → knowledge base type
 
-Duplicate entries update existing rows (ON DUPLICATE KEY UPDATE).
+➡️ Duplicate entries → update existing rows.
 
-8. Update Keywords Table
-
-Finally, the keywords table is updated to mark the searched keyword as completed:
-
+🔄 Update Keywords Table
 UPDATE keywords
-SET status = 'completed',
-    last_seen = CURRENT_TIMESTAMP
-WHERE keyword = :kw
+SET status = 'completed', last_seen = CURRENT_TIMESTAMP
+WHERE keyword = :kw;
 
 🔹 Response
-
-The endpoint returns:
-
 {
   "status": "ok",
   "inserted_count": 25,
@@ -182,300 +166,151 @@ The endpoint returns:
 }
 
 
-inserted_count → Number of chunks successfully inserted.
+inserted_count → number of chunks stored.
 
-external_table → Name of the external table used.
+external_table → name of created table.
 
-keyword_status → Processing status (completed).
-
-✅ Summary
-
-This endpoint provides a fully automated embedding pipeline that:
-
-Accepts raw document chunks.
-
-Generates embeddings.
-
-Creates a keyword-specific table (auto-refreshes if outdated).
-
-Sets up TiFlash + HNSW vector index for efficient similarity search.
-
-Stores chunk embeddings alongside metadata.
-
-Tracks keyword processing status.
-
-It ensures that each search keyword has a fresh, queryable vector store optimized for retrieval.
- 
+keyword_status → processing state.
 
 📌 /insertsearchtodb Endpoint – Keyword Tracking
 
-This endpoint manages the keywords table in the database. It ensures that every searched keyword is tracked, its status (pending / completed) is stored, and its usage statistics are updated.
+This endpoint manages the keywords table.
 
-It’s the entry point of the pipeline:
+📝 Tracks every searched keyword.
 
-Keeps track of what keywords have been searched.
+⚙️ Stores its status (pending / completed).
 
-Marks whether embeddings for that keyword have been processed.
-
-Prevents duplicate processing by reusing the existing keyword record.
+🔄 Updates usage statistics.
 
 🔹 Endpoint Definition
 @app.post("/insertsearchtodb")
 async def insert_search_to_db(topic: dict = Body(...)):
 
 
-Accepts a JSON body with:
+Accepts:
 
-{
-  "searched": "python tutorial --filetype:pdf"
-}
-
-
-Extracts the value of "searched" and uses it to manage the keywords table.
+{ "searched": "python tutorial --filetype:pdf" }
 
 🔹 Processing Steps
-1. Validate Input
+✅ Validate Input
 
-Extracts the "searched" string.
+If "searched" missing →
 
-If missing or empty → returns:
+{ "answer": "no", "reason": "No searched text provided" }
 
-{"answer": "no", "reason": "No searched text provided"}
-
-2. Ensure keywords Table Exists
-
-Before inserting or updating, it ensures the table exists:
-
+🗄️ Ensure keywords Table Exists
 CREATE TABLE IF NOT EXISTS keywords (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,   -- TiDB requires a PK
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
     keyword VARCHAR(255) UNIQUE,
     status ENUM('pending','completed') DEFAULT 'pending',
     last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     searches INT DEFAULT 1
-)
+);
+
+🔍 Check if Keyword Exists
+SELECT keyword, status, searches
+FROM keywords
+WHERE keyword = :kw;
 
 
-Columns explained:
+If new → insert with pending.
 
-id → unique primary key.
+Else → increment counter + update timestamp.
 
-keyword → the searched text (unique).
+🔄 Return Based on Status
 
-status → workflow state (pending = waiting for embeddings, completed = embeddings stored).
+If status = completed →
 
-last_seen → when this keyword was last searched.
-
-searches → how many times this keyword has been submitted.
-
-3. Check if Keyword Exists
-SELECT keyword, status, searches 
-FROM keywords 
-WHERE keyword = :kw
+{ "answer": "yes", "status": "completed" }
 
 
-If the keyword does not exist:
+If status = pending →
 
-Insert it with status = 'pending' and searches = 1.
-
-Return immediately with:
-
-{"answer": "no", "reason": "Keyword just inserted, status pending"}
-
-4. Update Metadata (If Keyword Exists)
-
-If the keyword is already present:
-
-Increment the search counter.
-
-Update the last_seen timestamp.
-
-UPDATE keywords
-SET searches = searches + 1, last_seen = NOW()
-WHERE keyword = :kw
-
-5. Return Based on Status
-
-If the keyword’s status = 'completed':
-
-{"answer": "yes", "status": "completed"}
-
-
-If the keyword’s status = 'pending':
-
-{"answer": "no", "status": "pending"}
-
-
-This lets the caller know whether the embeddings for that keyword are already in the system.
-
-6. Error Handling
-
-If any exception occurs (e.g., DB connection issue), returns:
-
-{"answer": "no", "error": "<error message>"}
-
-🔹 Workflow Role
-
-This endpoint is the controller for keyword ingestion:
-
-First-time keyword → inserts new row, marks it as pending.
-
-Repeated keyword → increments search count, updates timestamp, and reports the current status.
-
-Syncs with /embed →
-
-/insertsearchtodb manages keyword tracking.
-
-/embed updates the keyword’s status to completed once embeddings are stored.
-
-Together, they form a two-step ingestion pipeline:
-
-/insertsearchtodb → track keyword (create or update entry).
-
-/embed → process keyword chunks into embeddings and mark as completed.
-
-🔹 Example Scenarios
-First-time keyword search
-POST /insertsearchtodb
-{ "searched": "python tutorial --filetype:pdf" }
-
-
-Response
-
-{"answer": "no", "reason": "Keyword just inserted, status pending"}
-
-Repeat keyword search (still pending)
-{"answer": "no", "status": "pending"}
-
-Repeat keyword search (completed)
-{"answer": "yes", "status": "completed"}
-
-✅ Summary
-
-The /insertsearchtodb endpoint:
-
-Ensures a keywords tracking table exists.
-
-Records new searched keywords with pending status.
-
-Updates counters and timestamps for existing keywords.
-
-Returns whether a keyword is already processed (completed) or still pending.
-
-This enables a controlled pipeline for embedding ingestion, preventing duplicate work and tracking keyword lifecycle.
-
+{ "answer": "no", "status": "pending" }
 
 📌 /searchvectordb Endpoint – Semantic Multiple-Choice Search
 
-This endpoint performs a semantic similarity search over stored embeddings (internal and external knowledgebases) to automatically select the best multiple-choice option for a given question.
+This endpoint performs semantic similarity search to select the best multiple-choice answer.
 
-It’s essentially the retrieval + scoring part of your pipeline:
+Takes: question + options.
 
-Takes a question with options.
+Searches embeddings.
 
-Looks up related embeddings in the vector DB.
+Computes similarity.
 
-Computes similarity scores.
-
-Picks the option with the highest semantic similarity.
+✅ Picks the best-scoring option.
 
 🔹 Endpoint Definition
 @app.post("/searchvectordb")
 async def searchvectordb(payload: dict = Body(...)):
 
 
-Accepts a JSON body with a query field containing:
+Input:
 
 {
-  "query": "{ \"question\": { \"question\": \"Which language is used in FastAPI?\", \"options\": [\"Python\", \"Java\", \"Go\"], \"metadata\": { \"searched\": \"fastapi tutorial\" } } }"
+  "query": {
+    "question": {
+      "question": "Which language is used in FastAPI?",
+      "options": ["Python", "Java", "Go"],
+      "metadata": { "searched": "fastapi tutorial" }
+    }
+  }
 }
 
 🔹 Processing Steps
-1. Parse and Validate Input
+✅ Parse and Validate Input
 
 Extracts:
 
-question: the actual question string.
+question
 
-options: list of possible answers.
+options
 
-metadata: contains the original searched keyword.
+metadata.searched
 
-If question or options is missing → return error.
+🧹 Normalize Keyword
 
-2. Normalize Keyword
+From metadata.searched.
 
-From metadata.searched, extracts the base keyword (e.g., "fastapi tutorial") using normalize_keyword.
+Used to decide which tables to query.
 
-This determines which database tables to query.
+⏳ Apply Time Cutoffs
 
-3. Set Time Cutoffs
+Internal KB → 365 days.
 
-Defines how fresh data must be:
+External KB → 90 days.
 
-Internal knowledge cutoff → 365 days old.
-
-External knowledge cutoff → 90 days old.
-
-This ensures only recent, relevant data is used.
-
-4. Encode Question + Option Pair
-
-For each option:
-
-Concatenates the question and option → "Which language is used in FastAPI? Python".
-
-Encodes it into an embedding vector:
-
+🧠 Encode Question + Option Pair
+query_text = f"{question} {option}"
 vec = model.encode([query_text])[0]
 
-5. Search External Knowledgebase
+🌍 Search External Knowledgebase
 
-Uses table name: <base_keyword>_external.
+Table: <base_keyword>_external.
 
-Checks if the table exists.
+If exists → select rows (fresh within 90 days).
 
-If it exists, retrieves recent rows (retrieved_at >= external_cutoff) where sourcekb = 'external'.
+Compute cosine similarity.
 
-For each row:
+🏠 Search Internal Knowledgebase
 
-Loads stored embedding.
+Table: <base_keyword>_internal.
 
-Computes cosine similarity:
+If exists → select rows (fresh within 365 days).
 
-score = np.dot(vec, emb) / (np.linalg.norm(vec) * np.linalg.norm(emb))
+Compute cosine similarity.
 
+📊 Pick Best Chunk per Option
 
-Stores text, URL, and score.
+For each option → best scoring chunk.
 
-6. Search Internal Knowledgebase
+If none → score = 0.
 
-Uses table name: <base_keyword>_internal.
+✅ Pick Best Answer
 
-Same logic as external, but cutoff = 365 days and sourcekb = 'internal'.
-
-7. Pick Best Chunk per Option
-
-Combine internal + external results.
-
-If results exist → select the chunk with the highest similarity score.
-
-Otherwise → assign score = 0.
-
-Append { "option": option, "score": best_chunk_score } to option_scores.
-
-8. Pick Best Answer
-
-From all options, select the one with the highest score:
-
-best_option = max(option_scores, key=lambda x: x["score"])
-
-
----
+Select option with highest similarity score.
 
 🔹 Response
-
-Example response:
-
 {
   "status": "ok",
   "question": "Which language is used in FastAPI?",
@@ -485,37 +320,16 @@ Example response:
 }
 
 
-If something goes wrong (e.g., DB error), returns:
+If error →
 
-{ "status": "error", "message": "<error message>" }
+{ "status": "error", "message": "" }
 
+🔄 Workflow Summary
 
----
+/insertsearchtodb → track keyword (pending/completed).
 
-#�   ��� Workflow Role
+/embed → process + store embeddings (mark completed).
 
-/insertsearchtodb → Track keyword status.
+/searchvectordb → retrieve best multiple-choice answer. or direct to here if /insertsearchtodb checked table already completed
 
-/embed → Insert embeddings into <keyword>_internal / <keyword>_external.
-
-/searchvectordb → Query embeddings to pick best multiple-choice answer. or
-
-/searchvectordb  ^f^r only if insertsearchtodb keyword check having status completed 
-
-This endpoint closes the loop: after ingestion, it lets you ask questions with options and retrieves the best answer based on stored knowledge.
-
----
-
-#✅ Summary
-
-The /searchvectordb endpoint:
-
-Accepts a multiple-choice question with options.
-
-Encodes each option paired with the question into a vector.
-
-Searches both internal and external embeddings (with freshness cutoffs).
-
-Computes cosine similarity to stored chunks.
-
-Chooses the best option with the highest similarity score.
+➡️ Together, they form a full ingestion + retrieval pipeline.
