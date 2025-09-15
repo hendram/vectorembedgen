@@ -50,7 +50,7 @@ uvicorn vectorembedgen:app --host 0.0.0.0 --port 8000
 
 📌 /embed Endpoint – Embedding and Storage Pipeline
 
-##  The /embed API endpoint is responsible for:
+##  The /embed and /embedcorporate API endpoint is responsible for:
 
 📝 Extracting the searched keyword from incoming document chunks.
 
@@ -78,13 +78,14 @@ Accepts a JSON body containing a list of chunks.
 
 Each chunk contains:
 
+```bash
 {
    "text" → the content to embed.
 
    "metadata" → details such as url, date, sourcekb, and the searched keyword.
 
 }
-
+```
 ---
 
 ###  🔹 Processing Steps
@@ -103,10 +104,12 @@ Strips filters like --filetype or -site.
 
 Produces a clean base keyword used to name the external table.
 
-external_table = normalize_table_name_external(base_keyword)
+external_table = normalize_table_name_external(base_keyword)l
+
+for embedcorporate internal_table = normalize_table_name_internal
 
 
-➡️ Ensures each search term has its own dedicated table for embeddings.
+#### ➡️ Ensures each search term has its own dedicated table for embeddings.
 
 ### 🧠 Encode Embeddings
 
@@ -114,7 +117,7 @@ Converts chunks into embeddings with model.encode().
 
 vecs = model.encode(texts, show_progress_bar=False)
 
-### 🗄️ Manage External Table
+### 🗄️ Manage External or Internal Table
 
 ####  Connects via SessionLocal.
 
@@ -207,7 +210,6 @@ This endpoint manages the keywords table.
  🔹 Endpoint Definition
 
 
-
 ####  @app.post("/insertsearchtodb")
 
 
@@ -249,16 +251,19 @@ If new → insert with pending.
 
 Else → increment counter + update timestamp.
 
-🔄 Return Based on Status
+#### 🔄 Return Based on Status
 
 If status = completed →
 
+```bash
 { "answer": "yes", "status": "completed" }
-
+```
 
 If status = pending →
 
+```bash
 { "answer": "no", "status": "pending" }
+```
 
 ---
 
@@ -278,12 +283,14 @@ Takes: question + options.
 
 ---
 
-@app.post("/searchvectordb")
+####  @app.post("/searchvectordb")
+
 async def searchvectordb(payload: dict = Body(...)):
 
 
 Input:
 
+```bash
 {
   "query": {
     "question": {
@@ -293,9 +300,12 @@ Input:
     }
   }
 }
+```
 
-🔹 Processing Steps
-✅ Parse and Validate Input
+### 🔹 Processing Steps
+
+
+#### ✅ Parse and Validate Input
 
 Extracts:
 
@@ -307,25 +317,25 @@ Extracts:
    metadata.searched
 ```
 
-🧹 Normalize Keyword
+#### 🧹 Normalize Keyword
 
 From metadata.searched.
 
 Used to decide which tables to query.
 
-⏳ Apply Time Cutoffs
+#### ⏳ Apply Time Cutoffs
 
 Internal KB → 365 days.
 
 External KB → 90 days.
 
-🧠 Encode Question + Option Pair
+#### 🧠 Encode Question + Option Pair
 
 query_text = f"{question} {option}"
 
 vec = model.encode([query_text])[0]
 
-🌍 Search External Knowledgebase
+#### 🌍 Search External Knowledgebase
 
 Table: <base_keyword>_external.
 
@@ -333,7 +343,7 @@ If exists → select rows (fresh within 90 days).
 
 Compute cosine similarity.
 
-🏠 Search Internal Knowledgebase
+#### 🏠 Search _Internal Table
 
 Table: <base_keyword>_internal.
 
@@ -341,7 +351,7 @@ If exists → select rows (fresh within 365 days).
 
 Compute cosine similarity.
 
-📊 Pick Best Chunk per Option
+#### 📊 Pick Best Chunk per pair Question & Options
 
 For each option → best scoring chunk.
 
@@ -349,9 +359,12 @@ If none → score = 0.
 
 ✅ Pick Best Answer
 
+
 ###  Select option with highest similarity score.
 
-🔹 Response
+#### 🔹 Response
+
+```bash
 {
   "status": "ok",
   "question": "Which language is used in FastAPI?",
@@ -359,11 +372,13 @@ If none → score = 0.
   "bestAnswer": "Python",
   "metadata": { "searched": "fastapi tutorial" }
 }
-
+```
 
 If error →
 
+```bash
 { "status": "error", "message": "" }
+```
 
 ## 🔄 Workflow Summary
 
@@ -371,6 +386,6 @@ If error →
 
 /embed → process + store embeddings (mark completed).
 
-/searchvectordb → retrieve best multiple-choice answer. or direct to here if /insertsearchtodb checked table already completed
+/searchvectordb → retrieve best multiple-choice answer. or direct to here if /insertsearchtodb checked table already mark completed
 
 ➡️ Together, they form a full ingestion + retrieval pipeline.
