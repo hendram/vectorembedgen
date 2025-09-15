@@ -1,7 +1,9 @@
 #  About This Package
 
 This package functions as executor to create, insert, vectorized and search on tidb database. Shortly 
-could said this is a database connector to Tidb cloud. 
+could said this is a database connector to Tidb cloud.
+ 
+---
 
 🚀 How to Run It
 
@@ -346,7 +348,7 @@ query_text = f"{question} {option}"
 
 vec = model.encode([query_text])[0]
 
-#### 🌍 Search External Knowledgebase
+#### 🌍 Search _External Table
 
 Table: <base_keyword>_external.
 
