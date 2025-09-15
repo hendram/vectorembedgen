@@ -44,7 +44,7 @@ uvicorn vectorembedgen:app --host 0.0.0.0 --port 8000
 
 ---
 
-#📖 **How This Works**
+# 📖 **How This Works**
 
 This works based on some logic received from chunkgeneratorforaimodel
 
