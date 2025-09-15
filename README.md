@@ -50,7 +50,7 @@ uvicorn vectorembedgen:app --host 0.0.0.0 --port 8000
 
 📌 /embed Endpoint – Embedding and Storage Pipeline
 
-### The /embed API endpoint is responsible for:
+##  The /embed API endpoint is responsible for:
 
 📝 Extracting the searched keyword from incoming document chunks.
 
@@ -85,7 +85,7 @@ Each chunk contains:
 
 }
 
---
+---
 
 ###  🔹 Processing Steps
 
@@ -108,20 +108,21 @@ external_table = normalize_table_name_external(base_keyword)
 
 ➡️ Ensures each search term has its own dedicated table for embeddings.
 
-🧠 Encode Embeddings
+### 🧠 Encode Embeddings
 
 Converts chunks into embeddings with model.encode().
 
 vecs = model.encode(texts, show_progress_bar=False)
 
-🗄️ Manage External Table
+### 🗄️ Manage External Table
 
-Connects via SessionLocal.
+####  Connects via SessionLocal.
 
 If table exists but is older than 3 days → drop and recreate.
 
 Else → create fresh.
 
+```bash
 CREATE TABLE {external_table} (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     chunk_text TEXT NOT NULL,
@@ -130,10 +131,12 @@ CREATE TABLE {external_table} (
     retrieved_at TIMESTAMP,
     sourcekb VARCHAR(100)
 );
+```
+#### ⚡ Enable TiFlash Replication
 
-⚡ Enable TiFlash Replication
+```bash
 ALTER TABLE {external_table} SET TIFLASH REPLICA 1;
-
+```
 
 ➡️ Waits until TiFlash is ready before proceeding.
 
@@ -145,9 +148,9 @@ ADD VECTOR INDEX embedding_idx ((VEC_COSINE_DISTANCE(embedding)))
 USING HNSW;
 ```
 
-➡️ Optimizes nearest-neighbor lookups for similarity search.
+#### ➡️ Optimizes nearest-neighbor lookups for similarity search.
 
-📥 Insert Chunks with Embeddings
+#### 📥 Insert Chunks with Embeddings
 
 Inserts:
 
@@ -162,9 +165,9 @@ Inserts:
    sourcekb → knowledge base type
 
 
-➡️ Duplicate entries → update existing rows.
+#### ➡️ Duplicate entries → update existing rows.
 
-🔄 Update Keywords Table
+#### 🔄 Update Keywords Table
 
 ```bash
 UPDATE keywords
@@ -188,7 +191,10 @@ external_table → name of created table.
 
 keyword_status → processing state.
 
-📌 /insertsearchtodb Endpoint – Keyword Tracking
+
+---
+
+## 📌 /insertsearchtodb Endpoint – Keyword Tracking
 
 This endpoint manages the keywords table.
 
@@ -198,8 +204,13 @@ This endpoint manages the keywords table.
 
 🔄 Updates usage statistics.
 
-🔹 Endpoint Definition
-@app.post("/insertsearchtodb")
+ 🔹 Endpoint Definition
+
+
+
+####  @app.post("/insertsearchtodb")
+
+
 async def insert_search_to_db(topic: dict = Body(...)):
 
 
@@ -215,6 +226,8 @@ If "searched" missing →
 { "answer": "no", "reason": "No searched text provided" }
 
 🗄️ Ensure keywords Table Exists
+
+```bash
 CREATE TABLE IF NOT EXISTS keywords (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     keyword VARCHAR(255) UNIQUE,
@@ -222,12 +235,15 @@ CREATE TABLE IF NOT EXISTS keywords (
     last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     searches INT DEFAULT 1
 );
+```
 
 🔍 Check if Keyword Exists
+
+```bash
 SELECT keyword, status, searches
 FROM keywords
 WHERE keyword = :kw;
-
+```
 
 If new → insert with pending.
 
@@ -244,19 +260,24 @@ If status = pending →
 
 { "answer": "no", "status": "pending" }
 
-📌 /searchvectordb Endpoint – Semantic Multiple-Choice Search
+---
+
+## 📌 /searchvectordb Endpoint – Semantic Multiple-Choice Search
 
 This endpoint performs semantic similarity search to select the best multiple-choice answer.
 
 Takes: question + options.
 
-Searches embeddings.
+###  Searches embeddings.
 
-Computes similarity.
+  Computes similarity.
 
 ✅ Picks the best-scoring option.
 
 🔹 Endpoint Definition
+
+---
+
 @app.post("/searchvectordb")
 async def searchvectordb(payload: dict = Body(...)):
 
@@ -278,11 +299,13 @@ Input:
 
 Extracts:
 
-question
+```
+   question
 
-options
+   options
 
-metadata.searched
+   metadata.searched
+```
 
 🧹 Normalize Keyword
 
@@ -297,7 +320,9 @@ Internal KB → 365 days.
 External KB → 90 days.
 
 🧠 Encode Question + Option Pair
+
 query_text = f"{question} {option}"
+
 vec = model.encode([query_text])[0]
 
 🌍 Search External Knowledgebase
@@ -324,7 +349,7 @@ If none → score = 0.
 
 ✅ Pick Best Answer
 
-Select option with highest similarity score.
+###  Select option with highest similarity score.
 
 🔹 Response
 {
@@ -340,7 +365,7 @@ If error →
 
 { "status": "error", "message": "" }
 
-🔄 Workflow Summary
+## 🔄 Workflow Summary
 
 /insertsearchtodb → track keyword (pending/completed).
 
