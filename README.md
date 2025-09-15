@@ -157,6 +157,7 @@ USING HNSW;
 
 Inserts:
 
+```bash
    chunk_text → raw text
 
    embedding → 384-dim vector
@@ -166,7 +167,7 @@ Inserts:
    retrieved_at → timestamp
 
    sourcekb → knowledge base type
-
+```
 
 #### ➡️ Duplicate entries → update existing rows.
 
@@ -180,13 +181,15 @@ WHERE keyword = :kw;
 
 
 🔹 Response
+
+```bash
 {
   "status": "ok",
   "inserted_count": 25,
   "external_table": "python_programming",
   "keyword_status": "completed"
 }
-
+```
 
 inserted_count → number of chunks stored.
 
@@ -220,16 +223,22 @@ async def insert_search_to_db(topic: dict = Body(...)):
 
 Accepts:
 
+```bash
 { "searched": "python tutorial --filetype:pdf" }
+```
 
-🔹 Processing Steps
-✅ Validate Input
+### 🔹 Processing Steps
+
+#### ✅ Validate Input
 
 If "searched" missing →
 
+```bash
 { "answer": "no", "reason": "No searched text provided" }
+```
 
-🗄️ Ensure keywords Table Exists
+#### 🗄️ Ensure keywords Table Exists
+
 
 ```bash
 CREATE TABLE IF NOT EXISTS keywords (
@@ -241,7 +250,7 @@ CREATE TABLE IF NOT EXISTS keywords (
 );
 ```
 
-🔍 Check if Keyword Exists
+#### 🔍 Check if Keyword Exists
 
 ```bash
 SELECT keyword, status, searches
@@ -311,7 +320,7 @@ Input:
 
 Extracts:
 
-```
+```bash
    question
 
    options
