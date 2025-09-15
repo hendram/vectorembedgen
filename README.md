@@ -1,4 +1,4 @@
-About This Package
+#  About This Package
 
 This package functions as executor to create, insert, vectorized and search on tidb database. Shortly 
 could said this is a database connector to Tidb cloud. 
@@ -46,11 +46,11 @@ uvicorn vectorembedgen:app --host 0.0.0.0 --port 8000
 
 # 📖 **How This Works**
 
-This works based on some logic received from chunkgeneratorforaimodel
+####  This works based on some logic received from chunkgeneratorforaimodel
 
 📌 /embed Endpoint – Embedding and Storage Pipeline
 
-The /embed API endpoint is responsible for:
+### The /embed API endpoint is responsible for:
 
 📝 Extracting the searched keyword from incoming document chunks.
 
@@ -68,8 +68,9 @@ The /embed API endpoint is responsible for:
 
 🔹 Endpoint Definition
 
+---
 
-@app.post("/embed")
+####  @app.post("/embed")
 async def embed(chunks: list[dict] = Body(...)):
 
 
