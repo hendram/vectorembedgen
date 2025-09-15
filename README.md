@@ -66,11 +66,11 @@ uvicorn vectorembedgen:app --host 0.0.0.0 --port 8000
 
 🔄 Updating the keyword status in the keywords table.
 
-🔹 Endpoint Definition
-
 ---
 
-####  @app.post("/embed")
+## 🔹 Endpoint Definition
+
+###  @app.post("/embed")
 async def embed(chunks: list[dict] = Body(...)):
 
 
@@ -207,10 +207,12 @@ This endpoint manages the keywords table.
 
 🔄 Updates usage statistics.
 
- 🔹 Endpoint Definition
+---
+
+## 🔹 Endpoint Definition
 
 
-####  @app.post("/insertsearchtodb")
+###  @app.post("/insertsearchtodb")
 
 
 async def insert_search_to_db(topic: dict = Body(...)):
@@ -279,11 +281,11 @@ Takes: question + options.
 
 ✅ Picks the best-scoring option.
 
-🔹 Endpoint Definition
-
 ---
 
-####  @app.post("/searchvectordb")
+##  🔹 Endpoint Definition
+
+###  @app.post("/searchvectordb")
 
 async def searchvectordb(payload: dict = Body(...)):
 
@@ -357,7 +359,7 @@ For each option → best scoring chunk.
 
 If none → score = 0.
 
-✅ Pick Best Answer
+#### ✅ Pick Best Answer
 
 
 ###  Select option with highest similarity score.
