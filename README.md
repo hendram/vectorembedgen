@@ -5,21 +5,21 @@ could said this is a database connector to Tidb cloud.
  
 ---
 
-🚀 How to Run It
+## 🚀 How to Run It
 
-📥 Download
+#### 📥 Download
 
 ```bash
 docker pull ghcr.io/hendram/vectorembedgen
 ```
 
-▶️ Start
+#### ▶️ Start
 
 ```bash
 docker run -it -d --network=host ghcr.io/hendram/vectorembedgen bash
 ```
 
-🔍 Check Running Container
+#### 🔍 Check Running Container
 
 ```bash
 docker ps
@@ -30,13 +30,13 @@ CONTAINER ID   IMAGE                               NAME                STATUS
 123abc456def   ghcr.io/hendram/vectorembedgen      confident_banzai    Up 5 minutes
 ```
 
-📦 Enter Container
+#### 📦 Enter Container
 
 ```bash
 docker exec -it confident_banzai /bin/bash
 ```
 
-🏃 Run the Service
+#### 🏃 Run the Service
 
 ```bash
 cd /home
@@ -143,9 +143,9 @@ CREATE TABLE {external_table} (
 ALTER TABLE {external_table} SET TIFLASH REPLICA 1;
 ```
 
-➡️ Waits until TiFlash is ready before proceeding.
+#### ➡️ Waits until TiFlash is ready before proceeding.
 
-🧭 Create Vector Index
+#### 🧭 Create Vector Index
 
 ```bash
 ALTER TABLE {external_table}
