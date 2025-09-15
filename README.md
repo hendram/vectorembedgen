@@ -78,12 +78,18 @@ Accepts a JSON body containing a list of chunks.
 
 Each chunk contains:
 
-"text" → the content to embed.
+{
+   "text" → the content to embed.
 
-"metadata" → details such as url, date, sourcekb, and the searched keyword.
+   "metadata" → details such as url, date, sourcekb, and the searched keyword.
 
-🔹 Processing Steps
-✅ Validate Input
+}
+
+--
+
+###  🔹 Processing Steps
+
+#### ✅ Validate Input
 
 Ensures the request contains chunks.
 
@@ -91,7 +97,7 @@ Extracts the searched keyword from the first chunk’s metadata.
 
 If no keyword is provided → ❌ returns an error.
 
-🧹 Normalize Keyword
+#### 🧹 Normalize Keyword
 
 Strips filters like --filetype or -site.
 
@@ -132,10 +138,12 @@ ALTER TABLE {external_table} SET TIFLASH REPLICA 1;
 ➡️ Waits until TiFlash is ready before proceeding.
 
 🧭 Create Vector Index
+
+```bash
 ALTER TABLE {external_table}
 ADD VECTOR INDEX embedding_idx ((VEC_COSINE_DISTANCE(embedding)))
 USING HNSW;
-
+```
 
 ➡️ Optimizes nearest-neighbor lookups for similarity search.
 
@@ -143,22 +151,27 @@ USING HNSW;
 
 Inserts:
 
-chunk_text → raw text
+   chunk_text → raw text
 
-embedding → 384-dim vector
+   embedding → 384-dim vector
 
-url → source URL
+   url → source URL
 
-retrieved_at → timestamp
+   retrieved_at → timestamp
 
-sourcekb → knowledge base type
+   sourcekb → knowledge base type
+
 
 ➡️ Duplicate entries → update existing rows.
 
 🔄 Update Keywords Table
+
+```bash
 UPDATE keywords
 SET status = 'completed', last_seen = CURRENT_TIMESTAMP
 WHERE keyword = :kw;
+```
+
 
 🔹 Response
 {
