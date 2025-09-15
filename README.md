@@ -44,7 +44,7 @@ uvicorn vectorembedgen:app --host 0.0.0.0 --port 8000
 
 ---
 
-📖 How This Works
+#📖 **How This Works**
 
 This works based on some logic received from chunkgeneratorforaimodel
 
@@ -67,6 +67,8 @@ The /embed API endpoint is responsible for:
 🔄 Updating the keyword status in the keywords table.
 
 🔹 Endpoint Definition
+
+
 @app.post("/embed")
 async def embed(chunks: list[dict] = Body(...)):
 
